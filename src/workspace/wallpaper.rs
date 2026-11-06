@@ -13,7 +13,9 @@ use gpui::{
     linear_gradient, point, px, size,
 };
 
-use crate::settings::{BackgroundScope, PictureRepeat, Settings, color};
+use crate::settings::{BackgroundScope, Mask, PictureRepeat, Settings, color};
+
+mod mask;
 
 /// The most tiles one picture draws; past it the picture draws once.
 const MAX_TILES: usize = 400;
@@ -110,8 +112,38 @@ pub(super) fn paint(
                     let drawn = settings.background_size.points(intrinsic, container);
                     let free = (container.0 - drawn.0, container.1 - drawn.1);
                     let place = settings.background_position.points(free);
+                    let mask = settings
+                        .background_mask
+                        .then(|| {
+                            Mask::new(
+                                settings.background_mask_angle,
+                                &settings.background_mask_stops,
+                            )
+                        })
+                        .and_then(Result::ok);
+                    let mask_box = mask.as_ref().map(|_| mask::mask_box(settings, container));
+                    let once = settings.background_repeat == PictureRepeat::NoRepeat;
                     for (x, y) in tiles(settings.background_repeat, place, drawn, container) {
-                        boxed = boxed.child(tile(&image, x, y, drawn));
+                        let masked = match (&mask, mask_box, once) {
+                            (Some(mask), Some(mask_box), true) => mask::masked(
+                                &image,
+                                mask,
+                                &settings.background_mask_stops,
+                                mask_box,
+                                (x, y),
+                                drawn,
+                                container,
+                            ),
+                            _ => None,
+                        };
+                        let picture = masked.unwrap_or_else(|| image.clone());
+                        boxed = boxed.child(tile(
+                            &picture,
+                            x,
+                            y,
+                            drawn,
+                            settings.background_image_opacity,
+                        ));
                     }
                 }
             }
@@ -160,7 +192,13 @@ fn log_bad_gradient(from: &str, to: &str) {
 }
 
 /// One tile of the picture, at `x` and `y` in its box.
-fn tile(image: &Arc<RenderImage>, x: f32, y: f32, drawn: (f32, f32)) -> impl IntoElement {
+fn tile(
+    image: &Arc<RenderImage>,
+    x: f32,
+    y: f32,
+    drawn: (f32, f32),
+    opacity: f32,
+) -> impl IntoElement {
     img(image.clone())
         .absolute()
         .left(px(x))
@@ -168,6 +206,7 @@ fn tile(image: &Arc<RenderImage>, x: f32, y: f32, drawn: (f32, f32)) -> impl Int
         .w(px(drawn.0))
         .h(px(drawn.1))
         .object_fit(ObjectFit::Fill)
+        .opacity(opacity)
 }
 
 /// Where each tile starts, from the picture's place in its box; past `MAX_TILES`, the first one alone.
